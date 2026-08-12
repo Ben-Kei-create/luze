@@ -4,6 +4,13 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject var store: AppStore
     var body: some View {
+        if store.settings.hasCompletedOnboarding != true {
+            WelcomeView()
+        } else {
+            mainView
+        }
+    }
+    private var mainView: some View {
         NavigationSplitView {
             List(selection: $store.selection) {
                 Section { ForEach(SidebarItem.allCases.filter { $0 != .help }) { item in Label(item.rawValue, systemImage: item.icon).tag(item) } }
@@ -25,6 +32,33 @@ struct ContentView: View {
     }
 }
 
+struct WelcomeView: View {
+    @EnvironmentObject var store: AppStore
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 58)).foregroundStyle(.tint)
+            Text("Luze").font(.system(size: 42, weight: .bold))
+            Text("経理を、シンプルに。").font(.title2).foregroundStyle(.secondary)
+            Text("毎月の入力、証憑確認、カード明細の分類、集計、メール作成を\n上から順番に進めるだけで完了できます。")
+                .multilineTextAlignment(.center).foregroundStyle(.secondary).padding(.vertical, 12)
+            Button("今月の処理をはじめる") { store.settings.hasCompletedOnboarding = true }.buttonStyle(.borderedProminent).controlSize(.large)
+            Button("設定からはじめる") { store.settings.hasCompletedOnboarding = true; store.selection = .settings }.buttonStyle(.link)
+        }.frame(minWidth: 760, minHeight: 560).padding(40)
+    }
+}
+
+struct MonthSelector: View {
+    @Binding var month: Date
+    var body: some View {
+        HStack {
+            Button { move(-1) } label: { Image(systemName: "chevron.left") }
+            Text(AppStore.displayMonth.string(from: month)).font(.headline).frame(width: 120)
+            Button { move(1) } label: { Image(systemName: "chevron.right") }
+        }.buttonStyle(.borderless)
+    }
+    func move(_ value: Int) { month = Calendar.current.date(byAdding: .month, value: value, to: month) ?? month }
+}
+
 struct Page<Content: View>: View {
     let title: String; @ViewBuilder var content: Content
     var body: some View { VStack(alignment: .leading, spacing: 22) { Text(title).font(.largeTitle.bold()); content; Spacer() }.padding(32) }
@@ -38,12 +72,12 @@ struct MonthlyFlowView: View {
 struct MonthOverview: View {
     @EnvironmentObject var store: AppStore
     let steps = [("入力", "基本情報を入力します"), ("証憑チェック", "証憑の存在を確認します"), ("Vpass確認", "取引の内容を判断します"), ("集計", "経費を集計・確認します"), ("メール", "経理資料を共有します")]
-    var body: some View { Page(title: "\(AppStore.displayMonth.string(from: store.month))の処理") { Text("5ステップで完了します").foregroundStyle(.secondary); DatePicker("対象月", selection: $store.month, displayedComponents: [.date]).datePickerStyle(.compact).frame(width: 240); VStack(spacing: 0) { ForEach(steps.indices, id: \.self) { i in Button { if i == 4 { store.selection = .mail } else { store.step = i + 1 } } label: { HStack(spacing: 16) { ZStack { Circle().fill(store.current.completedSteps.contains(i + 1) ? Color.green : Color.accentColor.opacity(0.12)).frame(width: 36, height: 36); Text(store.current.completedSteps.contains(i + 1) ? "✓" : "\(i + 1)").foregroundStyle(store.current.completedSteps.contains(i + 1) ? Color.white : Color.accentColor) }; VStack(alignment: .leading) { Text(steps[i].0).font(.headline); Text(steps[i].1).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary) }.padding(16).contentShape(Rectangle()) }.buttonStyle(.plain); if i < 4 { Divider().padding(.leading, 68) } } }.background(.background).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(color: .black.opacity(0.06), radius: 8) } }
+    var body: some View { Page(title: "\(AppStore.displayMonth.string(from: store.month))の処理") { Text("5ステップで完了します").foregroundStyle(.secondary); MonthSelector(month: $store.month); VStack(spacing: 0) { ForEach(steps.indices, id: \.self) { i in Button { if i == 4 { store.selection = .mail } else { store.step = i + 1 } } label: { HStack(spacing: 16) { ZStack { Circle().fill(store.current.completedSteps.contains(i + 1) ? Color.green : Color.accentColor.opacity(0.12)).frame(width: 36, height: 36); Text(store.current.completedSteps.contains(i + 1) ? "✓" : "\(i + 1)").foregroundStyle(store.current.completedSteps.contains(i + 1) ? Color.white : Color.accentColor) }; VStack(alignment: .leading) { Text(steps[i].0).font(.headline); Text(steps[i].1).foregroundStyle(.secondary) }; Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary) }.padding(16).contentShape(Rectangle()) }.buttonStyle(.plain); if i < 4 { Divider().padding(.leading, 68) } } }.background(.background).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(color: .black.opacity(0.06), radius: 8) } }
 }
 
 struct InputStep: View {
     @EnvironmentObject var store: AppStore
-    var body: some View { Page(title: "1. 入力") { DatePicker("対象月", selection: $store.month, displayedComponents: [.date]).frame(width: 260); Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 16) { moneyRow("TechBiz", key: \.techBiz); moneyRow("HelloLinks", key: \.helloLinks); moneyRow("Kindle", key: \.kindle); GridRow { Text("出社日数"); TextField("0", value: Binding(get: { store.current.officeDays }, set: { v in store.updateCurrent { $0.officeDays = v } }), format: .number).frame(width: 180); Text("日").foregroundStyle(.secondary) } }; HStack { Button("戻る") { store.step = 0 }; Spacer(); Button("次へ") { store.complete(1) }.buttonStyle(.borderedProminent) } } }
+    var body: some View { Page(title: "1. 入力") { MonthSelector(month: $store.month); Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 16) { moneyRow("TechBiz", key: \.techBiz); moneyRow("HelloLinks", key: \.helloLinks); moneyRow("Kindle", key: \.kindle); GridRow { Text("出社日数"); TextField("0", value: Binding(get: { store.current.officeDays }, set: { v in store.updateCurrent { $0.officeDays = v } }), format: .number).frame(width: 180); Text("日").foregroundStyle(.secondary) } }; HStack { Button("戻る") { store.step = 0 }; Spacer(); Button("次へ") { store.complete(1) }.buttonStyle(.borderedProminent) } } }
     @ViewBuilder func moneyRow(_ title: String, key: WritableKeyPath<MonthlyData, Int>) -> some View { GridRow { Text(title).frame(width: 130, alignment: .leading); TextField("0", value: Binding(get: { store.current[keyPath: key] }, set: { v in store.updateCurrent { $0[keyPath: key] = v } }), format: .number).frame(width: 180); Text("円").foregroundStyle(.secondary) } }
 }
 

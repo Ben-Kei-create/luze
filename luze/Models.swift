@@ -37,6 +37,7 @@ struct MonthlyData: Codable {
 }
 
 struct SettingsData: Codable {
+    var hasCompletedOnboarding: Bool? = nil
     var recipient = "", email = "", sheetURL = "", scriptURL = "", dropboxURL = ""
     var rootFolder = "", rent = 86860, oneWayFare = 345
     var subjectTemplate = "{year}年{month}月分 経理資料の共有"
