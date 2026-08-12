@@ -171,8 +171,79 @@ struct VpassStep: View {
 
 struct SummaryStep: View {
     @EnvironmentObject var store: AppStore
-    var body: some View { let d = store.current; let vpass = d.transactions.filter { $0.decision == .expense }.reduce(0) { $0 + $1.amount }; let transport = store.attendanceDays(d) * store.settings.oneWayFare * 2; Page(title: "4. 集計") { HStack(spacing: 40) { Metric(title: "収入", value: store.incomeTotal(d)); Metric(title: "支出合計", value: store.expenseTotal()) }; VStack(spacing: 8) { ExpenseLine(title: "固定費", value: store.settings.rent); ExpenseLine(title: "Vpass経費", value: vpass); ExpenseLine(title: "交通費", value: transport) }.frame(maxWidth: 360); HStack { CountChip(title: "経費", count: d.transactions.filter { $0.decision == .expense }.count, color: .green); CountChip(title: "除外", count: d.transactions.filter { $0.decision == .excluded }.count, color: .gray); CountChip(title: "保留", count: d.transactions.filter { $0.decision == .pending }.count, color: .orange) }; StatusRow(title: "Google Sheets", ok: d.sheetExported, detail: d.sheetExported ? "反映済み" : "未反映"); Button(store.isWorking ? "反映中…" : "内容を確認してGoogle Sheetsへ反映") { Task { await store.exportToSheet() } }.disabled(store.isWorking); HStack { Button("戻る") { store.step = 3 }; Spacer(); Button("メールへ") { store.complete(4); store.selection = .mail }.buttonStyle(.borderedProminent) } } }
+    @State private var showsSpreadsheetPreview = false
+    var body: some View { let d = store.current; let vpass = d.transactions.filter { $0.decision == .expense }.reduce(0) { $0 + $1.amount }; let transport = store.attendanceDays(d) * store.settings.oneWayFare * 2; Page(title: "4. 集計") { HStack(spacing: 40) { Metric(title: "収入", value: store.incomeTotal(d)); Metric(title: "支出合計", value: store.expenseTotal()) }; VStack(spacing: 8) { ExpenseLine(title: "固定費", value: store.settings.rent); ExpenseLine(title: "カード明細経費", value: vpass); ExpenseLine(title: "交通費", value: transport) }.frame(maxWidth: 360); HStack { CountChip(title: "経費", count: d.transactions.filter { $0.decision == .expense }.count, color: .green); CountChip(title: "除外", count: d.transactions.filter { $0.decision == .excluded }.count, color: .gray); CountChip(title: "保留", count: d.transactions.filter { $0.decision == .pending }.count, color: .orange) }; StatusRow(title: "Spreadsheet連携", ok: true, detail: "送信前プレビューのみ（4A）"); Button("Spreadsheet送信内容を確認") { showsSpreadsheetPreview = true }; HStack { Button("戻る") { store.step = 3 }; Spacer(); Button("メールへ") { store.complete(4); store.selection = .mail }.buttonStyle(.borderedProminent) } } .sheet(isPresented: $showsSpreadsheetPreview) { SpreadsheetExportPreview(payload: store.spreadsheetPayload()) } }
 }
 struct Metric: View { let title: String, value: Int; var body: some View { VStack(alignment: .leading) { Text(title).foregroundStyle(.secondary); Text(value, format: .currency(code: "JPY")).font(.largeTitle.bold()) }.frame(maxWidth: .infinity, alignment: .leading).padding().background(.quaternary.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 12)) } }
 struct ExpenseLine: View { let title: String, value: Int; var body: some View { HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value, format: .currency(code: "JPY")).monospacedDigit() } } }
 struct CountChip: View { let title: String, count: Int, color: Color; var body: some View { Text("\(title)  \(count)件").padding(.horizontal, 16).padding(.vertical, 8).background(color.opacity(0.13)).clipShape(Capsule()) } }
+
+struct SpreadsheetExportPreview: View {
+    @Environment(\.dismiss) private var dismiss
+    let payload: SpreadsheetExportPayload
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Spreadsheet送信内容").font(.title2.bold())
+                    Text("対象月 \(payload.month) ・ API v\(payload.apiVersion)").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("閉じる") { dismiss() }
+            }
+            HStack(spacing: 16) {
+                PreviewMetric(title: "収入", count: payload.incomes.count, total: payload.incomeTotal)
+                PreviewMetric(title: "支出", count: payload.expenses.count, total: payload.expenseTotal)
+            }
+            List {
+                SpreadsheetPreviewSection(title: "収入", rows: payload.incomes)
+                SpreadsheetPreviewSection(title: "支出", rows: payload.expenses)
+            }
+            Text("Milestone 4Aでは内容確認のみです。本番Spreadsheetには送信しません。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .frame(minWidth: 680, minHeight: 520)
+    }
+}
+
+struct PreviewMetric: View {
+    let title: String
+    let count: Int
+    let total: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("\(title) \(count)件").foregroundStyle(.secondary)
+            Text(total, format: .currency(code: "JPY")).font(.title2.bold()).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.quaternary.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct SpreadsheetPreviewSection: View {
+    let title: String
+    let rows: [SpreadsheetExportRow]
+    var body: some View {
+        Section(title) {
+            if rows.isEmpty {
+                Text("対象なし").foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.company)
+                            Text("\(row.date) ・ \(row.content)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(row.amount, format: .currency(code: "JPY")).monospacedDigit()
+                    }
+                }
+            }
+        }
+    }
+}

@@ -123,24 +123,61 @@ import Security
         PermanentExclusionMemory.forget(id: id, in: &settings.permanentMerchantExclusions)
     }
 
-    func testConnection() async {
-        guard let url = URL(string: settings.scriptURL), !settings.scriptURL.isEmpty else { notice = "Apps Script URLを入力してください。"; return }
-        isWorking = true; defer { isWorking = false }
-        var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": "ping", "token": Keychain.token])
-        do { let (_, response) = try await URLSession.shared.data(for: request); guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else { throw URLError(.badServerResponse) }; notice = "接続しました。" }
-        catch { notice = "接続できませんでした。URLまたはAPI Tokenを確認してください。" }
+    func spreadsheetPayload() -> SpreadsheetExportPayload {
+        let data = current
+        let transport = attendanceDays(data) * settings.oneWayFare * 2
+        var calculatedExpenses: [SpreadsheetCalculatedExpense] = []
+        if settings.rent > 0 {
+            calculatedExpenses.append(.init(
+                stableKey: "fixed-expense:rent",
+                company: "固定費",
+                content: "家賃",
+                amount: settings.rent,
+                source: .fixedExpense
+            ))
+        }
+        if transport > 0 {
+            calculatedExpenses.append(.init(
+                stableKey: "calculated-expense:commute",
+                company: "交通費",
+                content: "通勤交通費",
+                amount: transport,
+                source: .commute
+            ))
+        }
+        return SpreadsheetExportPayloadBuilder().build(
+            month: month,
+            monthlyFields: settings.monthlyFields,
+            monthlyData: data,
+            calculatedExpenses: calculatedExpenses
+        )
     }
 
-    func exportToSheet() async {
-        guard let url = URL(string: settings.scriptURL), !settings.scriptURL.isEmpty else { notice = "設定でApps Script URLを登録してください。"; return }
-        let d = current
-        let transactions = d.transactions.filter { $0.decision == .expense }.map { ["id": $0.id.uuidString, "date": ISO8601DateFormatter().string(from: $0.date), "merchant": $0.merchant, "amount": $0.amount, "purpose": $0.purpose] as [String: Any] }
-        let income = Dictionary(uniqueKeysWithValues: settings.monthlyFields.filter { $0.kind == .income }.map { ($0.exportKey, d.value(for: $0.id)) })
-        let body: [String: Any] = ["action": "upsertMonth", "token": Keychain.token, "month": monthKey, "income": income, "fixedExpenses": ["rent": settings.rent, "transport": attendanceDays(d) * settings.oneWayFare * 2], "transactions": transactions]
+    func testConnection() async {
+        guard isHTTPSURL(settings.sheetURL), isHTTPSURL(settings.scriptURL) else {
+            notice = "Spreadsheet URLとApps Script URLを確認してください。"
+            return
+        }
+        guard !Keychain.token.isEmpty else {
+            notice = "API Tokenを入力してください。"
+            return
+        }
         isWorking = true; defer { isWorking = false }
-        do { var request = URLRequest(url: url); request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body); let (_, response) = try await URLSession.shared.data(for: request); guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else { throw URLError(.badServerResponse) }; updateCurrent { $0.sheetExported = true; for i in $0.transactions.indices where $0.transactions[i].decision == .expense { $0.transactions[i].exported = true } }; notice = "Google Sheetsへ反映しました。" }
-        catch { notice = "反映できませんでした：\(error.localizedDescription)" }
+        let destination = MockSpreadsheetDestination()
+        do {
+            _ = try await destination.testConnection()
+            let payload = spreadsheetPayload()
+            try await destination.validate(payload)
+            _ = try await destination.submit(payload)
+            notice = "接続設定とMock通信契約を確認しました。本番Sheetには送信していません。"
+        } catch {
+            notice = "接続契約を確認できませんでした。設定または送信内容を確認してください。"
+        }
+    }
+
+    private func isHTTPSURL(_ value: String) -> Bool {
+        guard let url = URL(string: value), url.scheme == "https", url.host != nil else { return false }
+        return true
     }
 
     private func save() { guard !loading else { return }; if let d = try? JSONEncoder().encode(settings) { defaults.set(d, forKey: "settings") }; if let d = try? JSONEncoder().encode(months) { defaults.set(d, forKey: "months") }; if let d = try? JSONEncoder().encode(decisionRecords) { defaults.set(d, forKey: "decisionRecords") } }
