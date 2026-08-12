@@ -11,6 +11,7 @@ import Security
     @Published var months: [String: MonthlyData] = [:] { didSet { save() } }
     @Published var notice = ""
     @Published var isWorking = false
+    @Published var lastImportStatistics: StatementImportStatistics?
 
     private let defaults = UserDefaults.standard
     private var loading = true
@@ -52,17 +53,16 @@ import Security
 
     func importCSV(url: URL) throws {
         let importer = StatementImporterRegistry.importer(for: settings.statementSource)
-        let importedItems = try importer.importTransactions(from: url, targetMonth: nil)
-        let items = importedItems.map { imported -> Transaction in
-            var item = Transaction(date: imported.transactionDate, merchant: imported.originalMerchantName, amount: imported.amount)
-            applyRules(to: &item)
-            return item
+        let result = try importer.importTransactions(from: url, targetMonth: month)
+        let items = result.transactions.map { imported -> Transaction in
+            Transaction(id: imported.id, date: imported.transactionDate, merchant: imported.originalMerchantName, amount: imported.amount)
         }
         updateCurrent { current in
             let keys = Set(current.transactions.map { "\($0.date.timeIntervalSince1970)|\($0.merchant)|\($0.amount)" })
             current.transactions.append(contentsOf: items.filter { !keys.contains("\($0.date.timeIntervalSince1970)|\($0.merchant)|\($0.amount)") })
         }
-        notice = "\(items.count)件の取引を読み込みました。"
+        lastImportStatistics = result.statistics
+        notice = "\(result.statistics.selectedTransactionCount)件の取引を読み込みました。"
     }
 
     func testConnection() async {
