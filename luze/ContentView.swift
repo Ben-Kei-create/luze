@@ -91,11 +91,82 @@ struct ReceiptStep: View {
 struct StatusRow: View { let title: String, ok: Bool, detail: String; var body: some View { HStack { Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(ok ? .green : .orange).font(.title2); VStack(alignment: .leading) { Text(title).font(.headline); Text(detail).foregroundStyle(.secondary) }; Spacer() }.padding().background(.quaternary.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 10)) } }
 
 struct VpassStep: View {
-    @EnvironmentObject var store: AppStore; @State private var index = 0
-    var body: some View { Page(title: "3. Vpass確認") { if store.current.transactions.isEmpty { ContentUnavailableView("CSVを読み込んでください", systemImage: "tablecells", description: Text("VpassのCSVファイルを選択します。")); HStack { Button("戻る") { store.step = 2 }; Spacer(); Button("CSVを選択") { chooseCSV() }.buttonStyle(.borderedProminent) } } else { let item = store.current.transactions[min(index, store.current.transactions.count - 1)]; Text("\(index + 1) / \(store.current.transactions.count)").foregroundStyle(.secondary); VStack(spacing: 14) { Text(item.merchant).font(.title.bold()); Text(item.date.formatted(date: .long, time: .omitted)); Text(item.amount, format: .currency(code: "JPY")).font(.system(size: 36, weight: .semibold)); Picker("判断", selection: decisionBinding(item.id)) { ForEach(Decision.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 420); if item.decision == .expense { TextField("用途（例：書籍・資料）", text: purposeBinding(item.id)).frame(maxWidth: 420) } }.frame(maxWidth: .infinity).padding(28).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 16)); HStack { Button("戻る") { if index > 0 { index -= 1 } else { store.step = 2 } }; Button("別のCSVを読み込む") { chooseCSV() }; Spacer(); Button(index + 1 < store.current.transactions.count ? "次の取引" : "集計へ") { if index + 1 < store.current.transactions.count { index += 1 } else { store.complete(3) } }.buttonStyle(.borderedProminent) } } } }
-    func decisionBinding(_ id: UUID) -> Binding<Decision> { Binding(get: { store.current.transactions.first(where: { $0.id == id })?.decision ?? .pending }, set: { value in store.updateCurrent { if let i = $0.transactions.firstIndex(where: { $0.id == id }) { $0.transactions[i].decision = value } } }) }
-    func purposeBinding(_ id: UUID) -> Binding<String> { Binding(get: { store.current.transactions.first(where: { $0.id == id })?.purpose ?? "" }, set: { value in store.updateCurrent { if let i = $0.transactions.firstIndex(where: { $0.id == id }) { $0.transactions[i].purpose = value } } }) }
-    func chooseCSV() { let panel = NSOpenPanel(); panel.allowedContentTypes = [.commaSeparatedText]; panel.allowsMultipleSelection = false; if panel.runModal() == .OK, let url = panel.url { do { try store.importCSV(url: url) } catch { store.notice = "Vpass CSVを読み込めませんでした\n\(error.localizedDescription)" } } }
+    @EnvironmentObject var store: AppStore
+    @State private var index = 0
+    @State private var reviewIDs: [UUID] = []
+    @State private var permanentCandidate: Transaction?
+
+    var currentItem: Transaction? {
+        guard !reviewIDs.isEmpty else { return nil }
+        return store.current.transactions.first { $0.id == reviewIDs[min(index, reviewIDs.count - 1)] }
+    }
+
+    var body: some View {
+        Page(title: "3. Vpass確認") {
+            if store.current.transactions.isEmpty {
+                ContentUnavailableView("CSVを読み込んでください", systemImage: "tablecells", description: Text("VpassのCSVファイルを選択します。"))
+                HStack { Button("戻る") { store.step = 2 }; Spacer(); Button("CSVを選択") { chooseCSV() }.buttonStyle(.borderedProminent) }
+            } else if let item = currentItem {
+                Text("要確認 \(index + 1) / \(reviewIDs.count)").foregroundStyle(.secondary)
+                VStack(spacing: 14) {
+                    Text(item.merchant).font(.title.bold())
+                    Text(item.date.formatted(date: .long, time: .omitted))
+                    Text(item.amount, format: .currency(code: "JPY")).font(.system(size: 36, weight: .semibold))
+                    Picker("判断", selection: decisionBinding(item.id)) { ForEach(Decision.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 420)
+                    if item.decision == .expense {
+                        TextField("用途（例：書籍・資料）", text: purposeBinding(item.id)).frame(maxWidth: 420)
+                    }
+                    if item.decision == .excluded {
+                        Toggle("今後もこの加盟店を自動除外", isOn: permanentExclusionBinding(item))
+                            .disabled(MerchantProtection.isProtected(item.merchant))
+                        if MerchantProtection.isProtected(item.merchant) {
+                            Text("この加盟店は安全保護されているため、恒久自動除外にはできません。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }.frame(maxWidth: .infinity).padding(28).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 16))
+                HStack {
+                    Button("戻る") { if index > 0 { index -= 1 } else { store.step = 2 } }
+                    Button("別のCSVを読み込む") { chooseCSV() }
+                    Spacer()
+                    Button(index + 1 < reviewIDs.count ? "次の取引" : "集計へ") { if index + 1 < reviewIDs.count { index += 1 } else { store.complete(3) } }.buttonStyle(.borderedProminent)
+                }
+            } else {
+                ContentUnavailableView("要確認の取引はありません", systemImage: "checkmark.circle", description: Text("自動分類が完了しています。"))
+                HStack { Button("戻る") { store.step = 2 }; Button("別のCSVを読み込む") { chooseCSV() }; Spacer(); Button("集計へ") { store.complete(3) }.buttonStyle(.borderedProminent) }
+            }
+        }
+        .onAppear { refreshReviewItems() }
+        .confirmationDialog(
+            "今後「\(permanentCandidate?.merchant ?? "")」を自動的に除外しますか？",
+            isPresented: Binding(get: { permanentCandidate != nil }, set: { if !$0 { permanentCandidate = nil } })
+        ) {
+            Button("自動除外する", role: .destructive) {
+                guard let candidate = permanentCandidate else { return }
+                do { try store.rememberPermanentExclusion(transactionID: candidate.id) }
+                catch { store.notice = error.localizedDescription }
+                permanentCandidate = nil
+            }
+            Button("キャンセル", role: .cancel) { permanentCandidate = nil }
+        }
+    }
+
+    func refreshReviewItems() {
+        reviewIDs = store.current.transactions.filter { $0.decision == .pending }.map(\.id)
+        index = min(index, max(0, reviewIDs.count - 1))
+    }
+    func decisionBinding(_ id: UUID) -> Binding<Decision> { Binding(get: { store.current.transactions.first(where: { $0.id == id })?.decision ?? .pending }, set: { store.setDecision(transactionID: id, decision: $0) }) }
+    func purposeBinding(_ id: UUID) -> Binding<String> { Binding(get: { store.current.transactions.first(where: { $0.id == id })?.purpose ?? "" }, set: { store.setPurpose(transactionID: id, purpose: $0) }) }
+    func permanentExclusionBinding(_ item: Transaction) -> Binding<Bool> {
+        Binding(
+            get: { store.settings.permanentMerchantExclusions.contains { $0.normalizedMerchantName == MerchantNormalizer().normalize(item.merchant) } },
+            set: { enabled in
+                if enabled { permanentCandidate = item }
+                else if let memory = store.settings.permanentMerchantExclusions.first(where: { $0.normalizedMerchantName == MerchantNormalizer().normalize(item.merchant) }) { store.forgetPermanentExclusion(id: memory.id) }
+            }
+        )
+    }
+    func chooseCSV() { let panel = NSOpenPanel(); panel.allowedContentTypes = [.commaSeparatedText]; panel.allowsMultipleSelection = false; if panel.runModal() == .OK, let url = panel.url { do { try store.importCSV(url: url); refreshReviewItems() } catch { store.notice = "Vpass CSVを読み込めませんでした\n\(error.localizedDescription)" } } }
 }
 
 struct SummaryStep: View {

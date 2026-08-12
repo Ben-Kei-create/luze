@@ -10,6 +10,14 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
 enum Decision: String, Codable, CaseIterable { case expense = "経費", pending = "保留", excluded = "除外" }
 
+enum ClassificationSource: String, Codable {
+    case automaticExpense
+    case automaticExclusion
+    case decisionHistory
+    case permanentExclusion
+    case review
+}
+
 struct Transaction: Identifiable, Codable, Hashable {
     var id = UUID()
     var date: Date
@@ -18,6 +26,43 @@ struct Transaction: Identifiable, Codable, Hashable {
     var decision: Decision = .pending
     var purpose = ""
     var exported = false
+    var classificationSource: ClassificationSource = .review
+
+    private enum CodingKeys: String, CodingKey {
+        case id, date, merchant, amount, decision, purpose, exported, classificationSource
+    }
+
+    init(
+        id: UUID = UUID(),
+        date: Date,
+        merchant: String,
+        amount: Int,
+        decision: Decision = .pending,
+        purpose: String = "",
+        exported: Bool = false,
+        classificationSource: ClassificationSource = .review
+    ) {
+        self.id = id
+        self.date = date
+        self.merchant = merchant
+        self.amount = amount
+        self.decision = decision
+        self.purpose = purpose
+        self.exported = exported
+        self.classificationSource = classificationSource
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        date = try container.decode(Date.self, forKey: .date)
+        merchant = try container.decode(String.self, forKey: .merchant)
+        amount = try container.decode(Int.self, forKey: .amount)
+        decision = try container.decodeIfPresent(Decision.self, forKey: .decision) ?? .pending
+        purpose = try container.decodeIfPresent(String.self, forKey: .purpose) ?? ""
+        exported = try container.decodeIfPresent(Bool.self, forKey: .exported) ?? false
+        classificationSource = try container.decodeIfPresent(ClassificationSource.self, forKey: .classificationSource) ?? .review
+    }
 }
 
 enum MonthlyFieldKind: String, Codable, CaseIterable {
@@ -67,6 +112,47 @@ struct MerchantRule: Identifiable, Codable, Hashable {
     var keyword: String
     var action: Action
     var purpose: String = ""
+    var isProtected = false
+
+    private enum CodingKeys: String, CodingKey { case id, keyword, action, purpose, isProtected }
+
+    init(id: UUID = UUID(), keyword: String, action: Action, purpose: String = "", isProtected: Bool = false) {
+        self.id = id
+        self.keyword = keyword
+        self.action = action
+        self.purpose = purpose
+        self.isProtected = isProtected
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        keyword = try container.decode(String.self, forKey: .keyword)
+        action = try container.decode(MerchantRule.Action.self, forKey: .action)
+        purpose = try container.decodeIfPresent(String.self, forKey: .purpose) ?? ""
+        isProtected = try container.decodeIfPresent(Bool.self, forKey: .isProtected)
+            ?? MerchantProtection.isProtected(keyword)
+    }
+}
+
+struct PermanentMerchantExclusion: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var normalizedMerchantName: String
+    var originalMerchantName: String
+    var createdAt = Date()
+}
+
+struct DecisionRecord: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var transactionFingerprint: String
+    var period: String
+    var date: Date
+    var merchant: String
+    var amount: Int
+    var decision: Decision
+    var purpose: String
+    var createdAt = Date()
+    var updatedAt = Date()
 }
 
 struct MonthlyData: Codable {
@@ -132,25 +218,25 @@ struct SettingsData: Codable {
     支出：{expense_total}円
     """
     var rules: [MerchantRule] = Self.defaultMerchantRules
+    var permanentMerchantExclusions: [PermanentMerchantExclusion] = []
 
-    private static let defaultMerchantRules: [MerchantRule] = [
-        .init(keyword: "Adobe", action: .expense, purpose: "デザインツール"),
-        .init(keyword: "SoftBank", action: .expense, purpose: "携帯料金"),
-        .init(keyword: "Google One", action: .expense, purpose: "クラウドストレージ"),
-        .init(keyword: "Anthropic", action: .expense, purpose: "AIツール"),
-        .init(keyword: "OpenAI", action: .expense, purpose: "AIツール"),
-        .init(keyword: "ChatGPT", action: .expense, purpose: "AIツール"),
-        .init(keyword: "Canva", action: .expense, purpose: "デザインツール"),
-        .init(keyword: "PASMO", action: .excluded),
-        .init(keyword: "SBI", action: .excluded),
-        .init(keyword: "Amazon", action: .review),
-        .init(keyword: "Apple", action: .review)
+    static let defaultMerchantRules: [MerchantRule] = [
+        .init(keyword: "OPENAI.*CHATGPT", action: .expense, purpose: "ChatGPT"),
+        .init(keyword: "ANTHROPIC|CLAUDE", action: .expense, purpose: "Claude"),
+        .init(keyword: "GOOGLE.*GOOGLE.?ONE|GOOGLE.?ONE", action: .expense, purpose: "Google One"),
+        .init(keyword: "ADOBE|アドビ", action: .expense, purpose: "編集ツール"),
+        .init(keyword: "CANVA", action: .expense, purpose: "デザインツール"),
+        .init(keyword: "ソフトバンク.*M|SOFTBANK.*M", action: .expense, purpose: "携帯料金"),
+        .init(keyword: "AMAZON", action: .review, purpose: "要確認", isProtected: true),
+        .init(keyword: "APPLE.?COM.?BILL", action: .review, purpose: "要確認", isProtected: true),
+        .init(keyword: "PASMO", action: .excluded, purpose: "チャージ"),
+        .init(keyword: "SBI証券.*投信|SBI.*投信", action: .excluded, purpose: "投資")
     ]
 
     private enum CodingKeys: String, CodingKey {
         case hasCompletedOnboarding, recipient, email, sheetURL, scriptURL, dropboxURL
         case rootFolder, rent, oneWayFare, monthlyFields, statementSource, receiptRules
-        case subjectTemplate, bodyTemplate, rules
+        case subjectTemplate, bodyTemplate, rules, permanentMerchantExclusions
     }
 
     init() {}
@@ -172,6 +258,14 @@ struct SettingsData: Codable {
         receiptRules = try container.decodeIfPresent([ReceiptRule].self, forKey: .receiptRules) ?? defaults.receiptRules
         subjectTemplate = try container.decodeIfPresent(String.self, forKey: .subjectTemplate) ?? defaults.subjectTemplate
         bodyTemplate = try container.decodeIfPresent(String.self, forKey: .bodyTemplate) ?? defaults.bodyTemplate
-        rules = try container.decodeIfPresent([MerchantRule].self, forKey: .rules) ?? defaults.rules
+        let decodedRules = try container.decodeIfPresent([MerchantRule].self, forKey: .rules)
+        rules = Self.isLegacyDefaultRules(decodedRules) ? defaults.rules : (decodedRules ?? defaults.rules)
+        permanentMerchantExclusions = try container.decodeIfPresent([PermanentMerchantExclusion].self, forKey: .permanentMerchantExclusions) ?? []
+    }
+
+    private static func isLegacyDefaultRules(_ rules: [MerchantRule]?) -> Bool {
+        guard let rules else { return false }
+        let legacy = ["Adobe", "SoftBank", "Google One", "Anthropic", "OpenAI", "ChatGPT", "Canva", "PASMO", "SBI", "Amazon", "Apple"]
+        return rules.map(\.keyword) == legacy
     }
 }

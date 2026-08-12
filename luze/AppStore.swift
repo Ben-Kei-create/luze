@@ -12,6 +12,8 @@ import Security
     @Published var notice = ""
     @Published var isWorking = false
     @Published var lastImportStatistics: StatementImportStatistics?
+    @Published var lastClassificationSummary: ClassificationSummary?
+    @Published var decisionRecords: [DecisionRecord] = [] { didSet { save() } }
 
     private let defaults = UserDefaults.standard
     private var loading = true
@@ -23,6 +25,7 @@ import Security
     init() {
         if let data = defaults.data(forKey: "settings"), let value = try? JSONDecoder().decode(SettingsData.self, from: data) { settings = value }
         if let data = defaults.data(forKey: "months"), let value = try? JSONDecoder().decode([String: MonthlyData].self, from: data) { months = value }
+        if let data = defaults.data(forKey: "decisionRecords"), let value = try? JSONDecoder().decode([DecisionRecord].self, from: data) { decisionRecords = value }
         loading = false
     }
 
@@ -54,15 +57,70 @@ import Security
     func importCSV(url: URL) throws {
         let importer = StatementImporterRegistry.importer(for: settings.statementSource)
         let result = try importer.importTransactions(from: url, targetMonth: month)
-        let items = result.transactions.map { imported -> Transaction in
-            Transaction(id: imported.id, date: imported.transactionDate, merchant: imported.originalMerchantName, amount: imported.amount)
+        let classifier = TransactionClassifier()
+        let classified = result.transactions.map { imported -> Transaction in
+            let classification = classifier.classify(
+                transaction: imported,
+                rules: settings.rules,
+                history: decisionRecords,
+                permanentExclusions: settings.permanentMerchantExclusions
+            )
+            return Transaction(
+                id: imported.id,
+                date: imported.transactionDate,
+                merchant: imported.originalMerchantName,
+                amount: imported.amount,
+                decision: classification.decision,
+                purpose: classification.purpose,
+                classificationSource: classification.source
+            )
         }
+        var appended: [Transaction] = []
         updateCurrent { current in
             let keys = Set(current.transactions.map { "\($0.date.timeIntervalSince1970)|\($0.merchant)|\($0.amount)" })
-            current.transactions.append(contentsOf: items.filter { !keys.contains("\($0.date.timeIntervalSince1970)|\($0.merchant)|\($0.amount)") })
+            appended = classified.filter { !keys.contains("\($0.date.timeIntervalSince1970)|\($0.merchant)|\($0.amount)") }
+            current.transactions.append(contentsOf: appended)
+        }
+        for transaction in appended {
+            DecisionHistory.upsert(transaction: transaction, period: monthKey, records: &decisionRecords)
         }
         lastImportStatistics = result.statistics
+        lastClassificationSummary = .init(
+            total: classified.count,
+            automaticExpenses: classified.filter { $0.classificationSource == .automaticExpense }.count,
+            automaticExclusions: classified.filter { $0.classificationSource == .automaticExclusion || $0.classificationSource == .permanentExclusion }.count,
+            reviews: classified.filter { $0.decision == .pending }.count
+        )
         notice = "\(result.statistics.selectedTransactionCount)件の取引を読み込みました。"
+    }
+
+    func setDecision(transactionID: UUID, decision: Decision, purpose: String? = nil) {
+        var updated: Transaction?
+        updateCurrent { current in
+            guard let index = current.transactions.firstIndex(where: { $0.id == transactionID }) else { return }
+            current.transactions[index].decision = decision
+            current.transactions[index].classificationSource = .decisionHistory
+            if let purpose { current.transactions[index].purpose = purpose }
+            if decision != .expense { current.transactions[index].purpose = "" }
+            updated = current.transactions[index]
+        }
+        if let updated {
+            DecisionHistory.upsert(transaction: updated, period: monthKey, records: &decisionRecords)
+        }
+    }
+
+    func setPurpose(transactionID: UUID, purpose: String) {
+        guard let transaction = current.transactions.first(where: { $0.id == transactionID }) else { return }
+        setDecision(transactionID: transactionID, decision: transaction.decision, purpose: purpose)
+    }
+
+    func rememberPermanentExclusion(transactionID: UUID) throws {
+        guard let transaction = current.transactions.first(where: { $0.id == transactionID }) else { return }
+        try PermanentExclusionMemory.remember(merchant: transaction.merchant, in: &settings.permanentMerchantExclusions)
+    }
+
+    func forgetPermanentExclusion(id: UUID) {
+        PermanentExclusionMemory.forget(id: id, in: &settings.permanentMerchantExclusions)
     }
 
     func testConnection() async {
@@ -85,7 +143,7 @@ import Security
         catch { notice = "反映できませんでした：\(error.localizedDescription)" }
     }
 
-    private func save() { guard !loading else { return }; if let d = try? JSONEncoder().encode(settings) { defaults.set(d, forKey: "settings") }; if let d = try? JSONEncoder().encode(months) { defaults.set(d, forKey: "months") } }
+    private func save() { guard !loading else { return }; if let d = try? JSONEncoder().encode(settings) { defaults.set(d, forKey: "settings") }; if let d = try? JSONEncoder().encode(months) { defaults.set(d, forKey: "months") }; if let d = try? JSONEncoder().encode(decisionRecords) { defaults.set(d, forKey: "decisionRecords") } }
 }
 
 enum Keychain {

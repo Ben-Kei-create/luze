@@ -10,7 +10,7 @@ let package = Package(
             name: "LuzeCore",
             path: "luze",
             exclude: ["AppStore.swift", "Assets.xcassets", "ContentView.swift", "SecondaryViews.swift", "luzeApp.swift"],
-            sources: ["Models.swift", "StatementImporting.swift"]
+            sources: ["Models.swift", "StatementImporting.swift", "TransactionClassification.swift"]
         ),
         .testTarget(
             name: "LuzeCoreTests",
