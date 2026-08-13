@@ -191,11 +191,53 @@ struct SpreadsheetExportPayloadBuilder: Sendable {
     }
 }
 
+struct SpreadsheetSyncCount: Codable, Equatable, Sendable {
+    var inserted: Int
+    var updated: Int
+    var skipped: Int
+
+    init(inserted: Int = 0, updated: Int = 0, skipped: Int = 0) {
+        self.inserted = inserted
+        self.updated = updated
+        self.skipped = skipped
+    }
+
+    var total: Int { inserted + updated + skipped }
+}
+
 struct SpreadsheetDestinationResult: Codable, Equatable, Sendable {
     var success: Bool
     var message: String?
     var acceptedRowCount: Int?
     var skippedRowCount: Int?
+    var month: String?
+    var spreadsheetID: String?
+    var income: SpreadsheetSyncCount?
+    var expense: SpreadsheetSyncCount?
+
+    nonisolated init(
+        success: Bool,
+        message: String? = nil,
+        acceptedRowCount: Int? = nil,
+        skippedRowCount: Int? = nil,
+        month: String? = nil,
+        spreadsheetID: String? = nil,
+        income: SpreadsheetSyncCount? = nil,
+        expense: SpreadsheetSyncCount? = nil
+    ) {
+        self.success = success
+        self.message = message
+        self.acceptedRowCount = acceptedRowCount
+        self.skippedRowCount = skippedRowCount
+        self.month = month
+        self.spreadsheetID = spreadsheetID
+        self.income = income
+        self.expense = expense
+    }
+
+    var insertedRowCount: Int { (income?.inserted ?? 0) + (expense?.inserted ?? 0) }
+    var updatedRowCount: Int { (income?.updated ?? 0) + (expense?.updated ?? 0) }
+    var totalSkippedRowCount: Int { (income?.skipped ?? 0) + (expense?.skipped ?? 0) }
 }
 
 enum SpreadsheetDestinationError: LocalizedError, Equatable {
@@ -204,7 +246,8 @@ enum SpreadsheetDestinationError: LocalizedError, Equatable {
     case transportFailure
     case httpFailure(Int)
     case invalidResponse
-    case rejected
+    case destinationMismatch
+    case rejected(String?)
 
     var errorDescription: String? {
         switch self {
@@ -218,8 +261,14 @@ enum SpreadsheetDestinationError: LocalizedError, Equatable {
             "Spreadsheet接続でHTTP \(status)エラーが発生しました。"
         case .invalidResponse:
             "Spreadsheetからの応答を確認できませんでした。"
-        case .rejected:
-            "Spreadsheetがリクエストを受け付けませんでした。"
+        case .destinationMismatch:
+            "Apps Scriptの接続先が設定したテストSpreadsheetと一致しません。"
+        case .rejected(let code):
+            switch code {
+            case "unauthorized": "API Tokenが一致しません。"
+            case "invalid_api_version": "Apps Script APIのバージョンが一致しません。"
+            default: "Spreadsheetがリクエストを受け付けませんでした。"
+            }
         }
     }
 }
@@ -261,9 +310,32 @@ protocol SpreadsheetHTTPTransport: Sendable {
     func send(_ request: URLRequest) async throws -> SpreadsheetHTTPResponse
 }
 
+final class AppsScriptRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard response.statusCode == 302,
+              request.url?.host == "script.googleusercontent.com" else {
+            completionHandler(request)
+            return
+        }
+        var redirected = request
+        redirected.httpMethod = "GET"
+        redirected.httpBody = nil
+        redirected.setValue(nil, forHTTPHeaderField: "Content-Type")
+        completionHandler(redirected)
+    }
+}
+
 struct URLSessionSpreadsheetHTTPTransport: SpreadsheetHTTPTransport {
     func send(_ request: URLRequest) async throws -> SpreadsheetHTTPResponse {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let session = URLSession(configuration: .ephemeral, delegate: AppsScriptRedirectDelegate(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SpreadsheetDestinationError.invalidResponse
         }
@@ -274,15 +346,18 @@ struct URLSessionSpreadsheetHTTPTransport: SpreadsheetHTTPTransport {
 struct AppsScriptSpreadsheetDestination: SpreadsheetDestination, CustomStringConvertible {
     private let webAppURL: URL
     private let apiToken: String
+    private let expectedSpreadsheetID: String?
     private let transport: any SpreadsheetHTTPTransport
 
     init(
         webAppURL: URL,
         apiToken: String,
+        expectedSpreadsheetID: String? = nil,
         transport: any SpreadsheetHTTPTransport = URLSessionSpreadsheetHTTPTransport()
     ) {
         self.webAppURL = webAppURL
         self.apiToken = apiToken
+        self.expectedSpreadsheetID = expectedSpreadsheetID
         self.transport = transport
     }
 
@@ -303,7 +378,7 @@ struct AppsScriptSpreadsheetDestination: SpreadsheetDestination, CustomStringCon
 
     func submit(_ payload: SpreadsheetExportPayload) async throws -> SpreadsheetDestinationResult {
         try await validate(payload)
-        let request = try request(action: "upsertMonth", payload: payload)
+        let request = try request(action: "syncMonth", payload: payload)
         return try await execute(request)
     }
 
@@ -341,12 +416,26 @@ struct AppsScriptSpreadsheetDestination: SpreadsheetDestination, CustomStringCon
         guard let decoded = try? JSONDecoder().decode(AppsScriptResponse.self, from: response.body) else {
             throw SpreadsheetDestinationError.invalidResponse
         }
-        guard decoded.ok else { throw SpreadsheetDestinationError.rejected }
+        guard decoded.ok else { throw SpreadsheetDestinationError.rejected(decoded.error) }
+        if let expectedSpreadsheetID,
+           decoded.spreadsheetID != expectedSpreadsheetID {
+            throw SpreadsheetDestinationError.destinationMismatch
+        }
+        let accepted = [decoded.income, decoded.expense]
+            .compactMap { $0 }
+            .reduce(0) { $0 + $1.total }
+        let skipped = [decoded.income, decoded.expense]
+            .compactMap { $0 }
+            .reduce(0) { $0 + $1.skipped }
         return .init(
             success: true,
             message: redact(decoded.message),
-            acceptedRowCount: decoded.acceptedRowCount,
-            skippedRowCount: decoded.skippedRowCount
+            acceptedRowCount: decoded.acceptedRowCount ?? accepted,
+            skippedRowCount: decoded.skippedRowCount ?? skipped,
+            month: decoded.month,
+            spreadsheetID: decoded.spreadsheetID,
+            income: decoded.income,
+            expense: decoded.expense
         )
     }
 
@@ -365,9 +454,14 @@ private struct AppsScriptRequest<Payload: Encodable>: Encodable {
 
 private struct AppsScriptResponse: Decodable {
     var ok: Bool
+    var error: String?
     var message: String?
     var acceptedRowCount: Int?
     var skippedRowCount: Int?
+    var month: String?
+    var spreadsheetID: String?
+    var income: SpreadsheetSyncCount?
+    var expense: SpreadsheetSyncCount?
 }
 
 enum MockSpreadsheetDestinationBehavior: Sendable {

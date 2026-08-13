@@ -30,7 +30,13 @@ import Security
     }
 
     func updateCurrent(_ edit: (inout MonthlyData) -> Void) {
-        var value = current; edit(&value); months[monthKey] = value
+        var value = current
+        let exportRelevantState = SpreadsheetExportState(monthlyData: value)
+        edit(&value)
+        if SpreadsheetExportState(monthlyData: value) != exportRelevantState {
+            value.sheetExported = false
+        }
+        months[monthKey] = value
     }
 
     func complete(_ value: Int) { updateCurrent { $0.completedSteps.insert(value) }; step = min(4, value + 1) }
@@ -154,25 +160,71 @@ import Security
     }
 
     func testConnection() async {
-        guard isHTTPSURL(settings.sheetURL), isHTTPSURL(settings.scriptURL) else {
+        guard let destination = spreadsheetDestination() else {
             notice = "Spreadsheet URLとApps Script URLを確認してください。"
             return
         }
-        guard !Keychain.token.isEmpty else {
-            notice = "API Tokenを入力してください。"
-            return
-        }
         isWorking = true; defer { isWorking = false }
-        let destination = MockSpreadsheetDestination()
         do {
             _ = try await destination.testConnection()
-            let payload = spreadsheetPayload()
-            try await destination.validate(payload)
-            _ = try await destination.submit(payload)
-            notice = "接続設定とMock通信契約を確認しました。本番Sheetには送信していません。"
+            notice = "Apps Script v2へ接続しました。データは変更していません。"
         } catch {
-            notice = "接続契約を確認できませんでした。設定または送信内容を確認してください。"
+            notice = error.localizedDescription
         }
+    }
+
+    func syncSpreadsheet(_ payload: SpreadsheetExportPayload) async -> SpreadsheetDestinationResult? {
+        guard settings.spreadsheetEnvironment == .test else {
+            notice = "Milestone 4Bでは本番Spreadsheetへ同期できません。"
+            return nil
+        }
+        guard payload == spreadsheetPayload() else {
+            notice = "プレビュー後に内容が変わりました。もう一度確認してください。"
+            return nil
+        }
+        guard let destination = spreadsheetDestination() else {
+            notice = Keychain.token.isEmpty
+                ? "API Tokenを入力してください。"
+                : "Spreadsheet URLとApps Script URLを確認してください。"
+            return nil
+        }
+        isWorking = true; defer { isWorking = false }
+        do {
+            let result = try await destination.submit(payload)
+            updateCurrent { current in
+                current.sheetExported = true
+                for index in current.transactions.indices where current.transactions[index].decision == .expense {
+                    current.transactions[index].exported = true
+                }
+            }
+            notice = "同期しました：追加 \(result.insertedRowCount)件・更新 \(result.updatedRowCount)件・変更なし \(result.totalSkippedRowCount)件"
+            return result
+        } catch {
+            notice = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func spreadsheetDestination() -> AppsScriptSpreadsheetDestination? {
+        guard isHTTPSURL(settings.sheetURL),
+              let spreadsheetID = spreadsheetID(from: settings.sheetURL),
+              let webAppURL = URL(string: settings.scriptURL),
+              webAppURL.scheme == "https",
+              webAppURL.host != nil,
+              !Keychain.token.isEmpty
+        else { return nil }
+        return AppsScriptSpreadsheetDestination(
+            webAppURL: webAppURL,
+            apiToken: Keychain.token,
+            expectedSpreadsheetID: spreadsheetID
+        )
+    }
+
+    private func spreadsheetID(from value: String) -> String? {
+        guard let range = value.range(of: "/spreadsheets/d/") else { return nil }
+        let suffix = value[range.upperBound...]
+        let id = suffix.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        return id.isEmpty ? nil : String(id)
     }
 
     private func isHTTPSURL(_ value: String) -> Bool {
@@ -181,6 +233,34 @@ import Security
     }
 
     private func save() { guard !loading else { return }; if let d = try? JSONEncoder().encode(settings) { defaults.set(d, forKey: "settings") }; if let d = try? JSONEncoder().encode(months) { defaults.set(d, forKey: "months") }; if let d = try? JSONEncoder().encode(decisionRecords) { defaults.set(d, forKey: "decisionRecords") } }
+}
+
+private struct SpreadsheetExportState: Equatable {
+    var fieldValues: [UUID: Int]
+    var transactions: [TransactionExportState]
+
+    init(monthlyData: MonthlyData) {
+        fieldValues = monthlyData.fieldValues
+        transactions = monthlyData.transactions.map(TransactionExportState.init)
+    }
+}
+
+private struct TransactionExportState: Equatable {
+    var id: UUID
+    var date: Date
+    var merchant: String
+    var amount: Int
+    var decision: Decision
+    var purpose: String
+
+    nonisolated init(_ transaction: Transaction) {
+        id = transaction.id
+        date = transaction.date
+        merchant = transaction.merchant
+        amount = transaction.amount
+        decision = transaction.decision
+        purpose = transaction.purpose
+    }
 }
 
 enum Keychain {

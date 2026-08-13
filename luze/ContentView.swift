@@ -172,7 +172,7 @@ struct VpassStep: View {
 struct SummaryStep: View {
     @EnvironmentObject var store: AppStore
     @State private var showsSpreadsheetPreview = false
-    var body: some View { let d = store.current; let vpass = d.transactions.filter { $0.decision == .expense }.reduce(0) { $0 + $1.amount }; let transport = store.attendanceDays(d) * store.settings.oneWayFare * 2; Page(title: "4. 集計") { HStack(spacing: 40) { Metric(title: "収入", value: store.incomeTotal(d)); Metric(title: "支出合計", value: store.expenseTotal()) }; VStack(spacing: 8) { ExpenseLine(title: "固定費", value: store.settings.rent); ExpenseLine(title: "カード明細経費", value: vpass); ExpenseLine(title: "交通費", value: transport) }.frame(maxWidth: 360); HStack { CountChip(title: "経費", count: d.transactions.filter { $0.decision == .expense }.count, color: .green); CountChip(title: "除外", count: d.transactions.filter { $0.decision == .excluded }.count, color: .gray); CountChip(title: "保留", count: d.transactions.filter { $0.decision == .pending }.count, color: .orange) }; StatusRow(title: "Spreadsheet連携", ok: true, detail: "送信前プレビューのみ（4A）"); Button("Spreadsheet送信内容を確認") { showsSpreadsheetPreview = true }; HStack { Button("戻る") { store.step = 3 }; Spacer(); Button("メールへ") { store.complete(4); store.selection = .mail }.buttonStyle(.borderedProminent) } } .sheet(isPresented: $showsSpreadsheetPreview) { SpreadsheetExportPreview(payload: store.spreadsheetPayload()) } }
+    var body: some View { let d = store.current; let vpass = d.transactions.filter { $0.decision == .expense }.reduce(0) { $0 + $1.amount }; let transport = store.attendanceDays(d) * store.settings.oneWayFare * 2; Page(title: "4. 集計") { HStack(spacing: 40) { Metric(title: "収入", value: store.incomeTotal(d)); Metric(title: "支出合計", value: store.expenseTotal()) }; VStack(spacing: 8) { ExpenseLine(title: "固定費", value: store.settings.rent); ExpenseLine(title: "カード明細経費", value: vpass); ExpenseLine(title: "交通費", value: transport) }.frame(maxWidth: 360); HStack { CountChip(title: "経費", count: d.transactions.filter { $0.decision == .expense }.count, color: .green); CountChip(title: "除外", count: d.transactions.filter { $0.decision == .excluded }.count, color: .gray); CountChip(title: "保留", count: d.transactions.filter { $0.decision == .pending }.count, color: .orange) }; StatusRow(title: "Spreadsheet連携", ok: d.sheetExported, detail: d.sheetExported ? "テストSheetへ同期済み" : "未同期"); Button("Spreadsheet送信内容を確認") { showsSpreadsheetPreview = true }; HStack { Button("戻る") { store.step = 3 }; Spacer(); Button("メールへ") { store.complete(4); store.selection = .mail }.buttonStyle(.borderedProminent) } } .sheet(isPresented: $showsSpreadsheetPreview) { SpreadsheetExportPreview(payload: store.spreadsheetPayload()) } }
 }
 struct Metric: View { let title: String, value: Int; var body: some View { VStack(alignment: .leading) { Text(title).foregroundStyle(.secondary); Text(value, format: .currency(code: "JPY")).font(.largeTitle.bold()) }.frame(maxWidth: .infinity, alignment: .leading).padding().background(.quaternary.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 12)) } }
 struct ExpenseLine: View { let title: String, value: Int; var body: some View { HStack { Text(title).foregroundStyle(.secondary); Spacer(); Text(value, format: .currency(code: "JPY")).monospacedDigit() } } }
@@ -180,7 +180,10 @@ struct CountChip: View { let title: String, count: Int, color: Color; var body: 
 
 struct SpreadsheetExportPreview: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: AppStore
     let payload: SpreadsheetExportPayload
+    @State private var asksForSyncConfirmation = false
+    @State private var result: SpreadsheetDestinationResult?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -200,12 +203,39 @@ struct SpreadsheetExportPreview: View {
                 SpreadsheetPreviewSection(title: "収入", rows: payload.incomes)
                 SpreadsheetPreviewSection(title: "支出", rows: payload.expenses)
             }
-            Text("Milestone 4Aでは内容確認のみです。本番Spreadsheetには送信しません。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let result {
+                HStack(spacing: 16) {
+                    Label("追加 \(result.insertedRowCount)件", systemImage: "plus.circle.fill")
+                    Label("更新 \(result.updatedRowCount)件", systemImage: "arrow.triangle.2.circlepath")
+                    Label("変更なし \(result.totalSkippedRowCount)件", systemImage: "equal.circle")
+                }
+                .font(.callout)
+            }
+            HStack {
+                Text("同期先はテスト専用です。本番Spreadsheetには送信しません。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(store.isWorking ? "同期中…" : "テストSpreadsheetへ同期") {
+                    asksForSyncConfirmation = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isWorking)
+            }
         }
         .padding(24)
         .frame(minWidth: 680, minHeight: 520)
+        .confirmationDialog(
+            "表示中の内容をテストSpreadsheetへ同期しますか？",
+            isPresented: $asksForSyncConfirmation
+        ) {
+            Button("同期する") {
+                Task { result = await store.syncSpreadsheet(payload) }
+            }
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("stableIDを使って追加・更新・変更なしを判定します。")
+        }
     }
 }
 

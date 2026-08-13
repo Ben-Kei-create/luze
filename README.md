@@ -20,16 +20,19 @@
 xcodebuild -project luze.xcodeproj -scheme luze -configuration Debug -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
-## Google Sheetsの準備
+## Google Sheetsの準備（v2テスト環境）
 
-1. Google Spreadsheetを作成します。
-2. 「拡張機能」→「Apps Script」を開き、`google-apps-script/Code.gs` の内容を貼り付けます。
+1. 本番経理とは別のテスト用Google Spreadsheetを作成し、`収入`と`支出`の2シートを用意します。
+2. 「拡張機能」→「Apps Script」を開き、`google-apps-script-v2/Code.gs` の内容を貼り付けます。
 3. Apps Scriptの「プロジェクトの設定」→「スクリプト プロパティ」に `LUZE_API_TOKEN` を追加し、十分に長いランダム値を設定します。
 4. 「デプロイ」→「新しいデプロイ」→「ウェブアプリ」を選び、アクセスできるユーザーを設定します。
-5. ウェブアプリURL、Spreadsheet URL、同じAPI TokenをLuzeの設定画面へ入力します。
+5. Luzeの接続先が`テスト専用`であることを確認し、ウェブアプリURL、Spreadsheet URL、同じAPI Tokenを設定画面へ入力します。
 6. 「接続テスト」を実行します。
+7. 集計画面で内容をプレビューし、明示的に「テストSpreadsheetへ同期」を実行します。
 
-Sheetsへの書き込みは `Luze ID` をキーに更新されるため、同じ月を再実行しても二重登録されません。
+v2は`stableID`を論理行IDとしてUPSERTします。未登録行はINSERT、内容が同じ行はSKIP、金額・内容等が変わった行はUPDATEされます。同じ月から削除されたLuze管理行も同期時に反映されるため、同じPayloadを再実行しても安全です。
+
+既存の`google-apps-script/Code.gs`はPythonおよび本番フロー用のv1契約として維持しています。v2テスト環境へ置き換えたり、既存本番Sheetへデプロイしないでください。
 
 ## データとセキュリティ
 

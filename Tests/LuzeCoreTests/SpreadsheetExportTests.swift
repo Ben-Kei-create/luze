@@ -165,6 +165,118 @@ struct SpreadsheetExportTests {
         }
     }
 
+    @Test("Apps Script v2のUPSERTレスポンスを解析する")
+    func parsesV2SyncResponse() async throws {
+        let response = """
+        {
+          "ok": true,
+          "spreadsheetID": "test-sheet-id",
+          "month": "2026-07",
+          "income": {"inserted": 2, "updated": 0, "skipped": 1},
+          "expense": {"inserted": 8, "updated": 1, "skipped": 2}
+        }
+        """
+        let destination = AppsScriptSpreadsheetDestination(
+            webAppURL: URL(string: "https://example.invalid/exec")!,
+            apiToken: "test-token",
+            expectedSpreadsheetID: "test-sheet-id",
+            transport: StubSpreadsheetTransport(response: .init(body: Data(response.utf8), statusCode: 200))
+        )
+
+        let result = try await destination.submit(build(transactions: [transaction(decision: .expense)]))
+
+        #expect(result.month == "2026-07")
+        #expect(result.spreadsheetID == "test-sheet-id")
+        #expect(result.insertedRowCount == 10)
+        #expect(result.updatedRowCount == 1)
+        #expect(result.totalSkippedRowCount == 3)
+        #expect(result.acceptedRowCount == 14)
+    }
+
+    @Test("設定したSpreadsheetとApps Scriptの接続先不一致を拒否する")
+    func rejectsDestinationMismatch() async {
+        let response = #"{"ok":true,"spreadsheetID":"different-sheet"}"#
+        let destination = AppsScriptSpreadsheetDestination(
+            webAppURL: URL(string: "https://example.invalid/exec")!,
+            apiToken: "test-token",
+            expectedSpreadsheetID: "configured-test-sheet",
+            transport: StubSpreadsheetTransport(response: .init(body: Data(response.utf8), statusCode: 200))
+        )
+
+        await #expect(throws: SpreadsheetDestinationError.destinationMismatch) {
+            try await destination.testConnection()
+        }
+    }
+
+    @Test("Apps Scriptエラーレスポンスを型付きエラーへ変換する")
+    func parsesAppsScriptError() async {
+        let destination = AppsScriptSpreadsheetDestination(
+            webAppURL: URL(string: "https://example.invalid/exec")!,
+            apiToken: "bad-token",
+            transport: StubSpreadsheetTransport(response: .init(
+                body: Data(#"{"ok":false,"error":"unauthorized"}"#.utf8),
+                statusCode: 200
+            ))
+        )
+
+        await #expect(throws: SpreadsheetDestinationError.rejected("unauthorized")) {
+            try await destination.testConnection()
+        }
+    }
+
+    @Test("専用テストSheetへSwift通信層から接続できる")
+    func liveAppsScriptV2Connection() async throws {
+        guard
+            let endpoint = ProcessInfo.processInfo.environment["LUZE_TEST_APPS_SCRIPT_URL"],
+            let token = ProcessInfo.processInfo.environment["LUZE_TEST_APPS_SCRIPT_TOKEN"],
+            let url = URL(string: endpoint)
+        else { return }
+
+        let destination = AppsScriptSpreadsheetDestination(
+            webAppURL: url,
+            apiToken: token,
+            expectedSpreadsheetID: "1Ng1Q4JA9C8thFdKn4zBWertpcOWmH4Tk6KW2w28Pu0A"
+        )
+
+        let health = try await destination.testConnection()
+        #expect(health.success)
+        #expect(health.spreadsheetID == "1Ng1Q4JA9C8thFdKn4zBWertpcOWmH4Tk6KW2w28Pu0A")
+
+        let payload = SpreadsheetExportPayload(
+            month: "2026-08",
+            incomes: [.init(
+                stableID: "luze_v2_acceptance_income_001",
+                date: "2026-08-31",
+                company: "匿名テスト会社A",
+                content: "匿名テスト業務・修正版",
+                amount: 120_000,
+                source: .monthlyInput
+            )],
+            expenses: [
+                .init(
+                    stableID: "luze_v2_acceptance_expense_001",
+                    date: "2026-08-12",
+                    company: "匿名テスト店舗A",
+                    content: "匿名テスト経費",
+                    amount: 1_200,
+                    source: .cardStatement
+                ),
+                .init(
+                    stableID: "luze_v2_acceptance_expense_002",
+                    date: "2026-08-13",
+                    company: "匿名テスト店舗B",
+                    content: "匿名テスト備品",
+                    amount: 2_500,
+                    source: .cardStatement
+                )
+            ]
+        )
+        let sync = try await destination.submit(payload)
+        #expect(sync.insertedRowCount == 0)
+        #expect(sync.updatedRowCount == 0)
+        #expect(sync.totalSkippedRowCount == 3)
+    }
+
     @Test("API Tokenを説明・レスポンス・エラーへ平文出力しない")
     func tokenIsRedacted() async throws {
         let token = "never-print-this-token"

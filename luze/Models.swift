@@ -219,6 +219,7 @@ struct SettingsData: Codable {
     """
     var rules: [MerchantRule] = Self.defaultMerchantRules
     var permanentMerchantExclusions: [PermanentMerchantExclusion] = []
+    var spreadsheetEnvironment = SpreadsheetEnvironment.test
 
     static let defaultMerchantRules: [MerchantRule] = [
         .init(keyword: "OPENAI.*CHATGPT", action: .expense, purpose: "ChatGPT"),
@@ -236,7 +237,7 @@ struct SettingsData: Codable {
     private enum CodingKeys: String, CodingKey {
         case hasCompletedOnboarding, recipient, email, sheetURL, scriptURL, dropboxURL
         case rootFolder, rent, oneWayFare, monthlyFields, statementSource, receiptRules
-        case subjectTemplate, bodyTemplate, rules, permanentMerchantExclusions
+        case subjectTemplate, bodyTemplate, rules, permanentMerchantExclusions, spreadsheetEnvironment
     }
 
     init() {}
@@ -261,11 +262,24 @@ struct SettingsData: Codable {
         let decodedRules = try container.decodeIfPresent([MerchantRule].self, forKey: .rules)
         rules = Self.isLegacyDefaultRules(decodedRules) ? defaults.rules : (decodedRules ?? defaults.rules)
         permanentMerchantExclusions = try container.decodeIfPresent([PermanentMerchantExclusion].self, forKey: .permanentMerchantExclusions) ?? []
+        spreadsheetEnvironment = try container.decodeIfPresent(SpreadsheetEnvironment.self, forKey: .spreadsheetEnvironment) ?? .test
     }
 
     private static func isLegacyDefaultRules(_ rules: [MerchantRule]?) -> Bool {
         guard let rules else { return false }
         let legacy = ["Adobe", "SoftBank", "Google One", "Anthropic", "OpenAI", "ChatGPT", "Canva", "PASMO", "SBI", "Amazon", "Apple"]
         return rules.map(\.keyword) == legacy
+    }
+}
+
+enum SpreadsheetEnvironment: String, Codable, CaseIterable {
+    case test
+    case production
+
+    var displayName: String {
+        switch self {
+        case .test: "テスト専用"
+        case .production: "本番（未対応）"
+        }
     }
 }
