@@ -48,8 +48,11 @@ struct ReceiptsView: View {
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.folder]
         panel.allowsMultipleSelection = false
+        panel.directoryURL = store.evidenceFolderURL
+            ?? FileManager.default.homeDirectoryForCurrentUser
         panel.prompt = "証憑フォルダを選択"
         if panel.runModal() == .OK, let url = panel.url {
             do { try store.selectEvidenceFolder(url) }
@@ -216,8 +219,11 @@ struct SettingsView: View {
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.folder]
         panel.allowsMultipleSelection = false
+        panel.directoryURL = store.evidenceFolderURL
+            ?? FileManager.default.homeDirectoryForCurrentUser
         panel.prompt = "証憑フォルダを選択"
         if panel.runModal() == .OK, let url = panel.url {
             do { try store.selectEvidenceFolder(url) }
