@@ -83,12 +83,117 @@ struct InputStep: View {
 
 struct ReceiptStep: View {
     @EnvironmentObject var store: AppStore
-    var monthFolder: URL? { guard !store.settings.rootFolder.isEmpty else { return nil }; return URL(fileURLWithPath: store.settings.rootFolder).appendingPathComponent(store.monthKey) }
-    var files: [URL] { guard let folder = monthFolder else { return [] }; return (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] }
-    var body: some View { Page(title: "2. 証憑チェック") { StatusRow(title: "Dropbox月フォルダ", ok: monthFolder.map { FileManager.default.fileExists(atPath: $0.path) } ?? false, detail: monthFolder?.lastPathComponent ?? "未設定"); StatusRow(title: "PDF", ok: files.contains { $0.pathExtension.lowercased() == "pdf" }, detail: "\(files.filter { $0.pathExtension.lowercased() == "pdf" }.count)ファイル"); StatusRow(title: "Vpass CSV", ok: !store.current.transactions.isEmpty, detail: store.current.transactions.isEmpty ? "未読込" : "読込済み"); Button("Dropboxフォルダを開く") { if let monthFolder { NSWorkspace.shared.open(monthFolder) } }.disabled(monthFolder == nil); HStack { Button("戻る") { store.step = 1 }; Spacer(); Button(files.isEmpty ? "不足したまま続ける" : "次へ") { store.complete(2) }.buttonStyle(.borderedProminent) } } }
+    var scan: EvidenceScanResult? { store.evidenceScanResult }
+    var hasMissingEvidence: Bool { scan?.hasMissingRequiredEvidence ?? true }
+
+    var body: some View {
+        Page(title: "2. 証憑チェック") {
+            EvidenceStatusRow(
+                title: "対象月フォルダ",
+                status: scan?.monthFolderURL == nil ? .missing : .found,
+                detail: scan?.monthFolderURL?.lastPathComponent ?? "\(store.monthKey) が見つかりません"
+            )
+
+            if let scan, scan.monthFolderURL != nil {
+                HStack(spacing: 18) {
+                    Label("PDF \(scan.pdfCount)件", systemImage: "doc.richtext")
+                    Label("CSV \(scan.csvCount)件", systemImage: "tablecells")
+                    Label("サブフォルダ \(scan.subfolderCount)件", systemImage: "folder")
+                }
+                .foregroundStyle(.secondary)
+
+                if scan.ruleResults.isEmpty {
+                    Text("必要な証憑ルールは未設定です。設定の「証憑フォルダ」から追加できます。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(scan.ruleResults) { result in
+                        EvidenceStatusRow(
+                            title: result.rule.name,
+                            status: result.status,
+                            detail: evidenceDetail(result)
+                        )
+                    }
+                }
+            }
+
+            if let error = store.evidenceScanError {
+                Text(error).font(.callout).foregroundStyle(.orange)
+            }
+
+            HStack {
+                Button(store.evidenceFolderURL == nil ? "証憑フォルダを選択" : "証憑フォルダを変更") {
+                    chooseFolder()
+                }
+                if let url = scan?.monthFolderURL ?? store.evidenceFolderURL {
+                    Button("Finderで開く") { store.openEvidenceURL(url) }
+                }
+            }
+
+            HStack {
+                Button("戻る") { store.step = 1 }
+                Spacer()
+                Button(hasMissingEvidence ? "不足したまま続ける" : "次へ") { store.complete(2) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .onAppear { store.refreshEvidenceScan() }
+    }
+
+    func evidenceDetail(_ result: EvidenceRuleResult) -> String {
+        let requirement = result.rule.isRequired ? "必須" : "任意"
+        switch result.status {
+        case .found: return "\(requirement)・\(result.matches[0].relativePath)"
+        case .multiple: return "\(requirement)・候補が\(result.matches.count)件あります"
+        case .missing: return "\(requirement)・見つかりません"
+        }
+    }
+
+    func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "証憑フォルダを選択"
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try store.selectEvidenceFolder(url) }
+            catch { store.notice = "証憑フォルダの権限を保存できませんでした。\n\(error.localizedDescription)" }
+        }
+    }
 }
 
 struct StatusRow: View { let title: String, ok: Bool, detail: String; var body: some View { HStack { Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill").foregroundStyle(ok ? .green : .orange).font(.title2); VStack(alignment: .leading) { Text(title).font(.headline); Text(detail).foregroundStyle(.secondary) }; Spacer() }.padding().background(.quaternary.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 10)) } }
+
+struct EvidenceStatusRow: View {
+    let title: String
+    let status: EvidenceMatchStatus
+    let detail: String
+
+    var color: Color {
+        switch status {
+        case .found: .green
+        case .multiple: .orange
+        case .missing: .red
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(status.symbol)
+                .font(.title2.bold())
+                .foregroundStyle(color)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(detail).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding()
+        .background(.quaternary.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
 
 struct VpassStep: View {
     @EnvironmentObject var store: AppStore

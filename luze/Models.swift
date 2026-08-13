@@ -97,7 +97,35 @@ struct ReceiptRule: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
     var filenameContains: String
+    var fileType: EvidenceFileType = .pdf
     var isRequired = true
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, filenameContains, fileType, isRequired
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        filenameContains: String,
+        fileType: EvidenceFileType = .pdf,
+        isRequired: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.filenameContains = filenameContains
+        self.fileType = fileType
+        self.isRequired = isRequired
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        filenameContains = try container.decode(String.self, forKey: .filenameContains)
+        fileType = try container.decodeIfPresent(EvidenceFileType.self, forKey: .fileType) ?? .pdf
+        isRequired = try container.decodeIfPresent(Bool.self, forKey: .isRequired) ?? true
+    }
 }
 
 struct StatementSource: Codable, Hashable {
@@ -196,7 +224,7 @@ struct MonthlyData: Codable {
 
 struct SettingsData: Codable {
     var hasCompletedOnboarding: Bool? = nil
-    var recipient = "", email = "", sheetURL = "", scriptURL = "", dropboxURL = ""
+    var recipient = "", email = "", sheetURL = "", scriptURL = "", evidenceFolderShareURL = ""
     var rootFolder = "", rent = 86860, oneWayFare = 345
     var monthlyFields = MonthlyFieldDefinition.defaults
     var statementSource = StatementSource.vpass
@@ -208,8 +236,8 @@ struct SettingsData: Codable {
     お世話になっております。
     {year}年{month}月分の資料を共有いたします。
 
-    ■ Dropbox
-    {dropbox_url}
+    ■ 証憑フォルダ
+    {evidence_folder_url}
 
     ■ Google Spreadsheet
     {sheet_url}
@@ -235,7 +263,8 @@ struct SettingsData: Codable {
     ]
 
     private enum CodingKeys: String, CodingKey {
-        case hasCompletedOnboarding, recipient, email, sheetURL, scriptURL, dropboxURL
+        case hasCompletedOnboarding, recipient, email, sheetURL, scriptURL
+        case evidenceFolderShareURL = "dropboxURL"
         case rootFolder, rent, oneWayFare, monthlyFields, statementSource, receiptRules
         case subjectTemplate, bodyTemplate, rules, permanentMerchantExclusions, spreadsheetEnvironment
     }
@@ -250,7 +279,7 @@ struct SettingsData: Codable {
         email = try container.decodeIfPresent(String.self, forKey: .email) ?? defaults.email
         sheetURL = try container.decodeIfPresent(String.self, forKey: .sheetURL) ?? defaults.sheetURL
         scriptURL = try container.decodeIfPresent(String.self, forKey: .scriptURL) ?? defaults.scriptURL
-        dropboxURL = try container.decodeIfPresent(String.self, forKey: .dropboxURL) ?? defaults.dropboxURL
+        evidenceFolderShareURL = try container.decodeIfPresent(String.self, forKey: .evidenceFolderShareURL) ?? defaults.evidenceFolderShareURL
         rootFolder = try container.decodeIfPresent(String.self, forKey: .rootFolder) ?? defaults.rootFolder
         rent = try container.decodeIfPresent(Int.self, forKey: .rent) ?? defaults.rent
         oneWayFare = try container.decodeIfPresent(Int.self, forKey: .oneWayFare) ?? defaults.oneWayFare

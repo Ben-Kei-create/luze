@@ -9,8 +9,8 @@ let package = Package(
         .target(
             name: "LuzeCore",
             path: "luze",
-            exclude: ["AppStore.swift", "Assets.xcassets", "ContentView.swift", "SecondaryViews.swift", "luzeApp.swift"],
-            sources: ["Models.swift", "StatementImporting.swift", "TransactionClassification.swift", "SpreadsheetExporting.swift"]
+            exclude: ["AppStore.swift", "Assets.xcassets", "ContentView.swift", "SecondaryViews.swift", "luzeApp.swift", "luze.entitlements"],
+            sources: ["Models.swift", "StatementImporting.swift", "TransactionClassification.swift", "SpreadsheetExporting.swift", "EvidenceScanning.swift"]
         ),
         .testTarget(
             name: "LuzeCoreTests",

@@ -6,17 +6,30 @@ import Security
 @MainActor final class AppStore: ObservableObject {
     @Published var selection: SidebarItem = .monthly
     @Published var step = 0
-    @Published var month = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: .now)) ?? .now
-    @Published var settings = SettingsData() { didSet { save() } }
+    @Published var month = Calendar.current.date(from: Calendar.current.dateComponents([.year, .month], from: .now)) ?? .now {
+        didSet { refreshEvidenceScan() }
+    }
+    @Published var settings = SettingsData() {
+        didSet {
+            save()
+            if oldValue.receiptRules != settings.receiptRules { refreshEvidenceScan() }
+        }
+    }
     @Published var months: [String: MonthlyData] = [:] { didSet { save() } }
     @Published var notice = ""
     @Published var isWorking = false
     @Published var lastImportStatistics: StatementImportStatistics?
     @Published var lastClassificationSummary: ClassificationSummary?
     @Published var decisionRecords: [DecisionRecord] = [] { didSet { save() } }
+    @Published private(set) var evidenceFolderURL: URL?
+    @Published private(set) var evidenceScanResult: EvidenceScanResult?
+    @Published private(set) var evidenceScanError: String?
 
     private let defaults = UserDefaults.standard
     private var loading = true
+    private var evidenceBookmarkStore: EvidenceFolderBookmarkStore {
+        EvidenceFolderBookmarkStore(defaults: defaults)
+    }
     var monthKey: String { Self.monthFormatter.string(from: month) }
     var current: MonthlyData { months[monthKey] ?? MonthlyData() }
     static let monthFormatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyyMM"; return f }()
@@ -27,6 +40,8 @@ import Security
         if let data = defaults.data(forKey: "months"), let value = try? JSONDecoder().decode([String: MonthlyData].self, from: data) { months = value }
         if let data = defaults.data(forKey: "decisionRecords"), let value = try? JSONDecoder().decode([DecisionRecord].self, from: data) { decisionRecords = value }
         loading = false
+        restoreEvidenceFolder()
+        refreshEvidenceScan()
     }
 
     func updateCurrent(_ edit: (inout MonthlyData) -> Void) {
@@ -127,6 +142,37 @@ import Security
 
     func forgetPermanentExclusion(id: UUID) {
         PermanentExclusionMemory.forget(id: id, in: &settings.permanentMerchantExclusions)
+    }
+
+    func selectEvidenceFolder(_ url: URL) throws {
+        try evidenceBookmarkStore.save(url)
+        evidenceFolderURL = url
+        settings.rootFolder = url.path
+        refreshEvidenceScan()
+    }
+
+    func refreshEvidenceScan() {
+        guard !loading else { return }
+        guard let rootURL = evidenceFolderURL else {
+            evidenceScanResult = nil
+            return
+        }
+        do {
+            evidenceScanResult = try withEvidenceFolderAccess(rootURL) {
+                try EvidenceScanner().scan(rootURL: rootURL, periodKey: monthKey, rules: settings.receiptRules)
+            }
+            evidenceScanError = nil
+        } catch {
+            evidenceScanResult = nil
+            evidenceScanError = error.localizedDescription
+        }
+    }
+
+    func openEvidenceURL(_ url: URL) {
+        guard let rootURL = evidenceFolderURL else { return }
+        _ = withEvidenceFolderAccess(rootURL) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func spreadsheetPayload() -> SpreadsheetExportPayload {
@@ -230,6 +276,35 @@ import Security
     private func isHTTPSURL(_ value: String) -> Bool {
         guard let url = URL(string: value), url.scheme == "https", url.host != nil else { return false }
         return true
+    }
+
+    private func restoreEvidenceFolder() {
+        do {
+            let resolvedURL = try evidenceBookmarkStore.restore()
+            evidenceFolderURL = resolvedURL
+            if settings.rootFolder != resolvedURL.path {
+                settings.rootFolder = resolvedURL.path
+            }
+            return
+        } catch EvidenceFolderBookmarkError.missing {
+            // Milestone 5より前の保存形式を下で移行する。
+        } catch {
+            evidenceBookmarkStore.clear()
+            evidenceScanError = "証憑フォルダの権限を復元できません。選び直してください。"
+        }
+
+        // Milestone 5より前に保存されたパスは表示を維持する。Sandbox権限は次回選択時に作成する。
+        if !settings.rootFolder.isEmpty {
+            evidenceFolderURL = URL(fileURLWithPath: settings.rootFolder, isDirectory: true)
+        }
+    }
+
+    private func withEvidenceFolderAccess<T>(_ rootURL: URL, operation: () throws -> T) rethrows -> T {
+        let didStartAccess = rootURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess { rootURL.stopAccessingSecurityScopedResource() }
+        }
+        return try operation()
     }
 
     private func save() { guard !loading else { return }; if let d = try? JSONEncoder().encode(settings) { defaults.set(d, forKey: "settings") }; if let d = try? JSONEncoder().encode(months) { defaults.set(d, forKey: "months") }; if let d = try? JSONEncoder().encode(decisionRecords) { defaults.set(d, forKey: "decisionRecords") } }
