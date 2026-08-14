@@ -224,26 +224,30 @@ struct MonthlyData: Codable {
 
 struct SettingsData: Codable {
     var hasCompletedOnboarding: Bool? = nil
-    var recipient = "", email = "", sheetURL = "", scriptURL = "", evidenceFolderShareURL = ""
+    var recipient = "", email = "", sheetURL = "", scriptURL = "", evidenceShareURL = ""
     var rootFolder = "", rent = 86860, oneWayFare = 345
     var monthlyFields = MonthlyFieldDefinition.defaults
     var statementSource = StatementSource.vpass
     var receiptRules: [ReceiptRule] = []
     var subjectTemplate = "{year}年{month}月分 経理資料の共有"
-    var bodyTemplate = """
+    var bodyTemplate = Self.defaultBodyTemplate
+
+    static let defaultBodyTemplate = """
     {recipient} 様
 
     お世話になっております。
-    {year}年{month}月分の資料を共有いたします。
+    {year}年{month}月分の経理資料を共有いたします。
 
     ■ 証憑フォルダ
-    {evidence_folder_url}
+    {evidence_share_url}
 
     ■ Google Spreadsheet
     {sheet_url}
 
-    収入：{income_total}円
-    支出：{expense_total}円
+    収入合計：{income_total}円
+    支出合計：{expense_total}円
+
+    よろしくお願いいたします。
     """
     var rules: [MerchantRule] = Self.defaultMerchantRules
     var permanentMerchantExclusions: [PermanentMerchantExclusion] = []
@@ -264,7 +268,7 @@ struct SettingsData: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case hasCompletedOnboarding, recipient, email, sheetURL, scriptURL
-        case evidenceFolderShareURL = "dropboxURL"
+        case evidenceShareURL, dropboxURL
         case rootFolder, rent, oneWayFare, monthlyFields, statementSource, receiptRules
         case subjectTemplate, bodyTemplate, rules, permanentMerchantExclusions, spreadsheetEnvironment
     }
@@ -279,7 +283,9 @@ struct SettingsData: Codable {
         email = try container.decodeIfPresent(String.self, forKey: .email) ?? defaults.email
         sheetURL = try container.decodeIfPresent(String.self, forKey: .sheetURL) ?? defaults.sheetURL
         scriptURL = try container.decodeIfPresent(String.self, forKey: .scriptURL) ?? defaults.scriptURL
-        evidenceFolderShareURL = try container.decodeIfPresent(String.self, forKey: .evidenceFolderShareURL) ?? defaults.evidenceFolderShareURL
+        evidenceShareURL = try container.decodeIfPresent(String.self, forKey: .evidenceShareURL)
+            ?? container.decodeIfPresent(String.self, forKey: .dropboxURL)
+            ?? defaults.evidenceShareURL
         rootFolder = try container.decodeIfPresent(String.self, forKey: .rootFolder) ?? defaults.rootFolder
         rent = try container.decodeIfPresent(Int.self, forKey: .rent) ?? defaults.rent
         oneWayFare = try container.decodeIfPresent(Int.self, forKey: .oneWayFare) ?? defaults.oneWayFare
@@ -287,11 +293,71 @@ struct SettingsData: Codable {
         statementSource = try container.decodeIfPresent(StatementSource.self, forKey: .statementSource) ?? defaults.statementSource
         receiptRules = try container.decodeIfPresent([ReceiptRule].self, forKey: .receiptRules) ?? defaults.receiptRules
         subjectTemplate = try container.decodeIfPresent(String.self, forKey: .subjectTemplate) ?? defaults.subjectTemplate
-        bodyTemplate = try container.decodeIfPresent(String.self, forKey: .bodyTemplate) ?? defaults.bodyTemplate
+        let decodedBodyTemplate = try container.decodeIfPresent(String.self, forKey: .bodyTemplate) ?? defaults.bodyTemplate
+        bodyTemplate = Self.migrateLegacyDefaultBodyTemplate(decodedBodyTemplate)
         let decodedRules = try container.decodeIfPresent([MerchantRule].self, forKey: .rules)
         rules = Self.isLegacyDefaultRules(decodedRules) ? defaults.rules : (decodedRules ?? defaults.rules)
         permanentMerchantExclusions = try container.decodeIfPresent([PermanentMerchantExclusion].self, forKey: .permanentMerchantExclusions) ?? []
         spreadsheetEnvironment = try container.decodeIfPresent(SpreadsheetEnvironment.self, forKey: .spreadsheetEnvironment) ?? .test
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(hasCompletedOnboarding, forKey: .hasCompletedOnboarding)
+        try container.encode(recipient, forKey: .recipient)
+        try container.encode(email, forKey: .email)
+        try container.encode(sheetURL, forKey: .sheetURL)
+        try container.encode(scriptURL, forKey: .scriptURL)
+        try container.encode(evidenceShareURL, forKey: .evidenceShareURL)
+        try container.encode(rootFolder, forKey: .rootFolder)
+        try container.encode(rent, forKey: .rent)
+        try container.encode(oneWayFare, forKey: .oneWayFare)
+        try container.encode(monthlyFields, forKey: .monthlyFields)
+        try container.encode(statementSource, forKey: .statementSource)
+        try container.encode(receiptRules, forKey: .receiptRules)
+        try container.encode(subjectTemplate, forKey: .subjectTemplate)
+        try container.encode(bodyTemplate, forKey: .bodyTemplate)
+        try container.encode(rules, forKey: .rules)
+        try container.encode(permanentMerchantExclusions, forKey: .permanentMerchantExclusions)
+        try container.encode(spreadsheetEnvironment, forKey: .spreadsheetEnvironment)
+    }
+
+    private static let legacyDefaultBodyTemplates = [
+        """
+        {recipient} 様
+
+        お世話になっております。
+        {year}年{month}月分の資料を共有いたします。
+
+        ■ Dropbox
+        {dropbox_url}
+
+        ■ Google Spreadsheet
+        {sheet_url}
+
+        収入：{income_total}円
+        支出：{expense_total}円
+        """,
+        """
+        {recipient} 様
+
+        お世話になっております。
+        {year}年{month}月分の資料を共有いたします。
+
+        ■ 証憑フォルダ
+        {evidence_folder_url}
+
+        ■ Google Spreadsheet
+        {sheet_url}
+
+        収入：{income_total}円
+        支出：{expense_total}円
+        """
+    ]
+
+    private static func migrateLegacyDefaultBodyTemplate(_ template: String) -> String {
+        let normalized = template.replacingOccurrences(of: "\r\n", with: "\n")
+        return legacyDefaultBodyTemplates.contains(normalized) ? defaultBodyTemplate : template
     }
 
     private static func isLegacyDefaultRules(_ rules: [MerchantRule]?) -> Bool {

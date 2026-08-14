@@ -69,15 +69,116 @@ struct HistoryView: View {
 
 struct MailView: View {
     @EnvironmentObject var store: AppStore
-    @State private var subject = ""
-    @State private var messageBody = ""
-    @State private var loadedKey = ""
-    var generatedSubject: String { render(store.settings.subjectTemplate) }
-    var generatedBody: String { render(store.settings.bodyTemplate) }
-    var body: some View { Page(title: "メール") { TextField("宛先", text: $store.settings.email); TextField("件名", text: $subject); TextEditor(text: $messageBody).font(.body).frame(minHeight: 280).padding(8).overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator)); HStack { Button("本文をコピー") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(messageBody, forType: .string); store.notice = "本文をコピーしました。" }; Spacer(); Button("Gmailを開く") { openGmail() }.buttonStyle(.borderedProminent) } }.onAppear { reloadIfNeeded() }.onChange(of: store.monthKey) { _, _ in reloadIfNeeded(force: true) } }
-    func reloadIfNeeded(force: Bool = false) { if force || loadedKey != store.monthKey { subject = generatedSubject; messageBody = generatedBody; loadedKey = store.monthKey } }
-    func render(_ template: String) -> String { let parts = Calendar.current.dateComponents([.year, .month], from: store.month); let values = ["{recipient}": store.settings.recipient, "{year}": "\(parts.year ?? 0)", "{month}": "\(parts.month ?? 0)", "{sheet_url}": store.settings.sheetURL, "{evidence_folder_url}": store.settings.evidenceFolderShareURL, "{dropbox_url}": store.settings.evidenceFolderShareURL, "{income_total}": "\(store.incomeTotal())", "{expense_total}": "\(store.expenseTotal())"]; return values.reduce(template) { $0.replacingOccurrences(of: $1.key, with: $1.value) } }
-    func openGmail() { var c = URLComponents(string: "https://mail.google.com/mail/")!; c.queryItems = [.init(name: "view", value: "cm"), .init(name: "to", value: store.settings.email), .init(name: "su", value: subject), .init(name: "body", value: messageBody)]; if let url = c.url { NSWorkspace.shared.open(url) } }
+    @State private var showsRegenerationConfirmation = false
+
+    private var generationSource: MailGenerationSource {
+        let parts = Calendar.current.dateComponents([.year, .month], from: store.month)
+        return MailGenerationSource(
+            subjectTemplate: store.settings.subjectTemplate,
+            bodyTemplate: store.settings.bodyTemplate,
+            context: .init(
+                recipientName: store.settings.recipient,
+                recipientEmail: store.settings.email,
+                year: parts.year ?? 0,
+                month: parts.month ?? 0,
+                spreadsheetURL: store.settings.sheetURL,
+                evidenceShareURL: store.settings.evidenceShareURL,
+                incomeTotal: store.incomeTotal(),
+                expenseTotal: store.expenseTotal(),
+                pendingCount: store.current.transactions.filter { $0.decision == .pending }.count
+            )
+        )
+    }
+
+    var body: some View {
+        Page(title: "メール") {
+            if store.mailDraft.isStale(comparedTo: generationSource) {
+                Label("設定または月次データが変更されています", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            if store.settings.recipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("宛名が未設定です", systemImage: "person.crop.circle.badge.exclamationmark")
+                    .foregroundStyle(.orange)
+            }
+            if store.settings.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("メールアドレスが未設定です", systemImage: "envelope.badge")
+                    .foregroundStyle(.orange)
+            }
+            if store.settings.evidenceShareURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("証憑共有URLが未設定です", systemImage: "link.badge.plus")
+                    .foregroundStyle(.orange)
+            }
+            if store.settings.sheetURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label("Spreadsheet URLが未設定です", systemImage: "tablecells.badge.ellipsis")
+                    .foregroundStyle(.orange)
+            }
+
+            TextField("宛先", text: $store.settings.email)
+            TextField("件名", text: $store.mailDraft.subject)
+            TextEditor(text: $store.mailDraft.body)
+                .font(.body)
+                .frame(minHeight: 280)
+                .padding(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+
+            HStack {
+                Menu("コピー") {
+                    Button("宛先をコピー") { copy(store.settings.email, label: "宛先") }
+                    Button("件名をコピー") { copy(store.mailDraft.subject, label: "件名") }
+                    Button("本文をコピー") { copy(store.mailDraft.body, label: "本文") }
+                }
+                Button("本文をコピー") { copy(store.mailDraft.body, label: "本文") }
+                Button("本文を再生成") { requestRegeneration() }
+                Spacer()
+                Button("Gmailを開く") { openGmail() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .onAppear {
+            if store.mailDraft.generatedSource == nil {
+                store.mailDraft.regenerate(from: generationSource)
+            }
+        }
+        .alert("本文を再生成", isPresented: $showsRegenerationConfirmation) {
+            Button("キャンセル", role: .cancel) {}
+            Button("再生成", role: .destructive) {
+                store.mailDraft.regenerate(from: generationSource, overwriteEditedBody: true)
+            }
+        } message: {
+            Text("編集した本文を最新設定から作り直しますか？")
+        }
+    }
+
+    private func requestRegeneration() {
+        if store.mailDraft.isBodyEdited {
+            showsRegenerationConfirmation = true
+        } else {
+            store.mailDraft.regenerate(from: generationSource)
+        }
+    }
+
+    private func copy(_ value: String, label: String) {
+        if MailClipboard(writer: SystemClipboardWriter()).copy(value) {
+            store.notice = "\(label)をコピーしました。"
+        }
+    }
+
+    private func openGmail() {
+        if let url = GmailComposeURLBuilder().build(
+            recipient: store.settings.email,
+            subject: store.mailDraft.subject,
+            body: store.mailDraft.body
+        ) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+private struct SystemClipboardWriter: ClipboardWriting {
+    func write(_ value: String) -> Bool {
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(value, forType: .string)
+    }
 }
 
 struct SettingsView: View {
@@ -90,7 +191,7 @@ struct SettingsView: View {
                 Form {
                     Section("提出先") {
                         TextField("宛名", text: $store.settings.recipient)
-                        TextField("メール", text: $store.settings.email)
+                        TextField("メールアドレス", text: $store.settings.email)
                     }
                 }
                 .padding()
@@ -121,6 +222,12 @@ struct SettingsView: View {
                             .textSelection(.enabled)
                         Button(store.evidenceFolderURL == nil ? "選択" : "変更") { chooseFolder() }
                         Text("Dropbox、iCloud Drive、Google Drive、OneDrive、またはローカルフォルダを選択できます。権限はこのMacに保存されます。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("証憑共有URL") {
+                        TextField("証憑共有URL（任意）", text: $store.settings.evidenceShareURL)
+                        Text("提出先が閲覧できるDropbox、Google Drive、OneDrive等の共有URLを入力します。ローカルフォルダとは別に保存されます。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -159,7 +266,7 @@ struct SettingsView: View {
                     }
                 }
                 .padding()
-                .tabItem { Label("証憑フォルダ", systemImage: "folder") }
+                .tabItem { Label("証憑", systemImage: "folder") }
 
                 Form {
                     Section("固定費・交通費") {
@@ -205,7 +312,7 @@ struct SettingsView: View {
                 Form {
                     TextField("件名テンプレート", text: $store.settings.subjectTemplate)
                     TextEditor(text: $store.settings.bodyTemplate).frame(minHeight: 220)
-                    Text("利用可能: {recipient} {year} {month} {sheet_url} {evidence_folder_url} {income_total} {expense_total}")
+                    Text("利用可能: {recipient} {year} {month} {sheet_url} {evidence_share_url} {income_total} {expense_total} {pending_count}")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -242,7 +349,7 @@ struct HelpView: View {
                     Text("2. 今月の処理で収入と出社日数を入力します。")
                     Text("3. 証憑とVpass CSVを確認し、取引を分類します。")
                     Text("4. Spreadsheetへ送る内容を確認し、明示的に同期します。")
-                    Text("5. メール本文をコピーし、Gmailで送信します。")
+                    Text("5. メール本文をコピーし、Gmailの作成画面を開きます。")
                 }
                 .padding()
             }

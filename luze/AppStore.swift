@@ -21,6 +21,7 @@ import Security
     @Published var lastImportStatistics: StatementImportStatistics?
     @Published var lastClassificationSummary: ClassificationSummary?
     @Published var decisionRecords: [DecisionRecord] = [] { didSet { save() } }
+    @Published var mailDraft = MailDraftState()
     @Published private(set) var evidenceFolderURL: URL?
     @Published private(set) var evidenceScanResult: EvidenceScanResult?
     @Published private(set) var evidenceScanError: String?
@@ -42,6 +43,7 @@ import Security
         loading = false
         restoreEvidenceFolder()
         refreshEvidenceScan()
+        save()
     }
 
     func updateCurrent(_ edit: (inout MonthlyData) -> Void) {
